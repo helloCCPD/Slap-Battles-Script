@@ -568,4 +568,128 @@ local ok, err = xpcall(function()
                     bv.Velocity = dir.Magnitude > 0 and dir.Unit * (getgenv().FlySpeed or 80) or Vector3.zero
                     task.wait()
                 end
+            end)
+        end)
+        UI:KeyPicker(ft, "R")
+    end
+
+    do -- FARM
+        local s = UI:Section(Tabs.Farm, "Auto Farm Slap")
+        UI:Dropdown(s, "Mode", {"Teleport","Tween"}, false, "Teleport", function(v) getgenv().FarmMode = v end)
+        local farm = UI:Toggle(s, "Auto Farm Slap", false, function(v)
+            getgenv().FarmSlap = v
+            if v then task.spawn(function() while getgenv().FarmSlap do
+                local char = LocalPlayer.Character; local hrp = char and char:FindFirstChild("HumanoidRootPart")
+                if hrp then
+                    if not char:FindFirstChild("entered") then
+                        local tp = workspace:FindFirstChild("Lobby") and workspace.Lobby:FindFirstChild("Teleport1")
+                        if tp then char:FindFirstChildOfClass("Humanoid"):MoveTo(tp.Position) end
+                    else
+                        local _, tr = TargetPlayers(true)
+                        if tr then
+                            if getgenv().FarmMode == "Teleport" then hrp.CFrame = tr.CFrame * CFrame.new(0,3,0); task.wait(0.1); slapglove(tr); task.wait(0.4)
+                            else
+                                CreateFreezeBV({ Name = "FarmTween" }); local bv = hrp:FindFirstChild("FarmTween")
+                                if bv then local dir = (tr.Position + Vector3.new(0,4,0)) - hrp.Position; bv.Velocity = dir.Magnitude > 5 and dir.Unit * 90 or Vector3.zero; if dir.Magnitude <= 6 then slapglove(tr); task.wait(0.5) end end
+                            end
+                        end
+                    end
+                end
+                task.wait(getgenv().FarmMode == "Teleport" and 0.1 or 0)
+            end end) end
+        end)
+        UI:KeyPicker(farm, "F")
+        local m = UI:Section(Tabs.Farm, "Auto Ability")
+        UI:Toggle(m, "Spam Ability", false, function(v)
+            getgenv().SpamAbility = v
+            if v then task.spawn(function() while getgenv().SpamAbility do
+                local g = CheckGlove()
+                pcall(function()
+                    if g == "Fort" then ReplicatedStorage.Fortlol:FireServer()
+                    elseif g == "bus" then ReplicatedStorage.busmoment:FireServer()
+                    elseif g == "Replica" then ReplicatedStorage.Duplicate:FireServer(true)
+                    elseif g == "Bomb" then ReplicatedStorage.BombThrow:FireServer()
+                    elseif g == "Shard" then ReplicatedStorage.Shards:FireServer()
+                    elseif g == "Bubble" then ReplicatedStorage.BubbleThrow:FireServer()
+                    elseif g == "Phase" then ReplicatedStorage.PhaseA:FireServer()
+                    elseif g == "Pusher" then ReplicatedStorage.PusherWall:FireServer()
+                    elseif g == "Null" then ReplicatedStorage.NullAbility:FireServer() end
+                end)
+                task.wait(0.1)
+            end end) end
+        end)
+    end
+
+    do -- GLOVES
+        local s = UI:Section(Tabs.Gloves, "Utility")
+        UI:Input(s, "Player", "", function(v) getgenv().PlayerSel = FoundPlr(v, true) end)
+        UI:Button(s, "Teleport To Player", function()
+            local p = getgenv().PlayerSel
+            if p and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character then LocalPlayer.Character.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame end
+        end)
+        UI:Dropdown(s, "Equip Glove", {"Default","Extended","Brick","Snow","Fort","Bomb","Replica","Phase","Shard","Bubble","Pusher","Null","bus"}, false, nil, function(v) equipglove(v) end)
+        local b = UI:Section(Tabs.Gloves, "Badges")
+        UI:Button(b, "Get Duck + Orange + Knife", function() pcall(function()
+            fireclickdetector(workspace.Lobby.Scene.knofe.ClickDetector)
+            fireclickdetector(workspace.Arena.island5.Orange.ClickDetector)
+            fireclickdetector(workspace.Arena["default island"]["Rubber Ducky"].ClickDetector)
+        end) end)
+        UI:Button(b, "Get Free Ice Skate", function() pcall(function() ReplicatedStorage.IceSkate:FireServer("Freeze") end) end)
+        UI:Button(b, "Get Free Lamp (ZZZZZZZ)", function() for _=1,5 do pcall(function() ReplicatedStorage.nightmare:FireServer("LightBroken") end) end end)
+    end
+
+    do -- MISC
+        local s = UI:Section(Tabs.Misc, "Glove Cosmetics")
+        UI:Toggle(s, "Big Glove", false, function(v)
+            getgenv().BigGlove = v
+            if v then task.spawn(function() while getgenv().BigGlove do local c = LocalPlayer.Character; if c then local t = c:FindFirstChildOfClass("Tool"); if t and t:FindFirstChild("Glove") then t.Glove.Size = Vector3.new(8,8,8); t.Glove.Transparency = 0.3 end end; task.wait() end end) end
+        end)
+        local e = UI:Section(Tabs.Misc, "ESP")
+        UI:Toggle(e, "Player ESP", false, function(v)
+            getgenv().ESP = v
+            if not v then for _, p in ipairs(Players:GetPlayers()) do if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("Head") then local h = p.Character.Head:FindFirstChild("VeniceESP"); if h then h:Destroy() end end end end
+        end)
+        hook(RunService.Heartbeat:Connect(function()
+            if not getgenv().ESP then return end
+            for _, p in ipairs(Players:GetPlayers()) do
+                if p ~= LocalPlayer and p.Character and p.Character:FindFirstChild("Head") then
+                    local head = p.Character.Head; local bb = head:FindFirstChild("VeniceESP")
+                    if not bb then
+                        bb = new("BillboardGui", { Name = "VeniceESP", Parent = head, Size = UDim2.new(0,100,0,30), StudsOffset = Vector3.new(0,3,0), AlwaysOnTop = true })
+                        new("TextLabel", { Parent = bb, Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, Text = "", TextColor3 = Color3.new(1,1,1), Font = Enum.Font.GothamBold, TextSize = 13, TextStrokeTransparency = 0.3 })
+                    end
+                    local ls = p:FindFirstChild("leaderstats"); local hum = p.Character:FindFirstChildOfClass("Humanoid")
+                    bb.TextLabel.Text = (ls and ls:FindFirstChild("Glove") and ls.Glove.Value or "?") .. " | " .. math.floor(hum and hum.Health or 0)
+                end
             end
+        end))
+    end
+
+    do -- SETTINGS
+        local s = UI:Section(Tabs.Settings, "UI")
+        UI:Slider(s, "Notify Duration", 1, 15, 5, function(v) CONFIG.TimeNotify = v end)
+        UI:Button(s, "Unload", function() if getgenv().VeniceUnload then getgenv().VeniceUnload() end end)
+    end
+end, function(e) return tostring(e) .. "\n" .. debug.traceback() end)
+if not ok then warn("[Venice Hub] BUILD ERROR: " .. tostring(err)) end
+
+--==================================================================================--
+-- 6. UNLOAD + PERSIST
+--==================================================================================--
+getgenv().VeniceUnload = function()
+    getgenv().VeniceHubLoaded = false
+    for _, c in ipairs(Connections) do pcall(function() c:Disconnect() end) end
+    Connections = {}
+    if getgenv().VeniceHook then pcall(function() hookmetamethod(game, "__namecall", getgenv().VeniceHook) end) end
+    if UI and UI.Window and UI.Window.Gui then pcall(function() UI.Window.Gui:Destroy() end) end
+    print("[Venice Hub] Unloaded.")
+end
+hook(LocalPlayer.OnTeleport:Connect(function()
+    if not getgenv().VeniceHubLoaded then return end
+    local q = queueonteleport or queue_on_teleport
+    if q then q([[if not game:IsLoaded() then game.Loaded:Wait() end
+repeat task.wait() until game.Players.LocalPlayer
+loadstring(game:HttpGet("https://raw.githubusercontent.com/Articles-Hub/ROBLOXScript/refs/heads/main/File-Script/Slap_Battles.lua"))()]]) end
+end))
+Notify("Venice Hub loaded" .. (bypassOK and " • bypass OK" or ""))
+print("[Venice Hub] Ready • PlaceId " .. game.PlaceId)
