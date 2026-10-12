@@ -1,5 +1,4 @@
---[[  VENICE HUB v2  |  Slap Battles  |  Rayfield-style UI + Massive Anti-Cheat / Anti / Mastery / Badges  ]]
---  Merged & upgraded from Venice Hub + Articles-Hub + community protection scripts.
+--[[  VENICE HUB v2  |  Slap Battles  |  Rayfield-style UI + Massive Anti-Cheat / Anti / Mastery / Badges / Script Loaders  ]]
 
 --==================================================================================--
 -- 0. BOOTSTRAP
@@ -499,6 +498,45 @@ function Ven:Dropdown(sec, text, values, multi, default, callback)
     end
 end
 
+function Ven:PlayerDropdown(sec, text, callback)
+    local selected = nil
+    local row = new("Frame", { BackgroundTransparency = 1 })
+    new("TextLabel", { Parent = row, Size = UDim2.new(1,0,0,18), BackgroundTransparency = 1, Text = text, Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = Color3.fromRGB(210,210,224), TextXAlignment = Enum.TextXAlignment.Left })
+    local box = new("TextButton", { Parent = row, Size = UDim2.new(1,0,0,28), Position = UDim2.new(0,0,0,22), BackgroundColor3 = Color3.fromRGB(28,28,38), BorderSizePixel = 0, Text = "Select...", Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = Color3.fromRGB(170,170,185), AutoButtonColor = false })
+    new("UICorner", { CornerRadius = UDim.new(0,7), Parent = box })
+    new("UIStroke", { Color = Color3.fromRGB(45,45,60), Thickness = 1, Parent = box })
+    local rowTop = sec.Cursor
+    sec:Row(row, 56)
+    local list = new("Frame", { Parent = sec.Frame, Size = UDim2.new(1,-20,0,8*26+8), Position = UDim2.new(0,10,0,rowTop + 52), BackgroundColor3 = Color3.fromRGB(28,28,38), BorderSizePixel = 0, Visible = false, ZIndex = 50 })
+    new("UICorner", { CornerRadius = UDim.new(0,7), Parent = list })
+    local scroll = new("ScrollingFrame", { Parent = list, Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, ScrollBarThickness = 3, CanvasSize = UDim2.new(0,0,0,0) })
+    new("UIListLayout", { Parent = scroll, Padding = UDim.new(0,2), SortOrder = Enum.SortOrder.Name })
+
+    local function rebuild()
+        for _, c in ipairs(scroll:GetChildren()) do if c:IsA("TextButton") then c:Destroy() end end
+        local names = {}
+        for _, p in ipairs(Players:GetPlayers()) do table.insert(names, p) end
+        table.sort(names, function(a, b) return a.Name:lower() < b.Name:lower() end)
+        for _, p in ipairs(names) do
+            local opt = new("TextButton", { Parent = scroll, Size = UDim2.new(1,-8,0,24), BackgroundColor3 = Color3.fromRGB(34,34,46), BorderSizePixel = 0, Text = "", AutoButtonColor = false, ZIndex = 51 })
+            new("UICorner", { CornerRadius = UDim.new(0,5), Parent = opt })
+            new("TextLabel", { Parent = opt, Size = UDim2.new(1,-8,1,0), Position = UDim2.new(0,8,0,0), BackgroundTransparency = 1, Text = p.Name .. (p == LocalPlayer and "  (You)" or ""), Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = Color3.fromRGB(210,210,224), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 52 })
+            opt.MouseButton1Click:Connect(function()
+                selected = p
+                box.Text = p.Name
+                list.Visible = false
+                if callback then task.spawn(callback, p) end
+            end)
+        end
+        scroll.CanvasSize = UDim2.new(0,0,0,#names * 26 + 4)
+    end
+    box.MouseButton1Click:Connect(function() list.Visible = not list.Visible; if list.Visible then rebuild() end end)
+    hook(Players.PlayerAdded:Connect(rebuild))
+    hook(Players.PlayerRemoving:Connect(function(p) if selected == p then selected = nil; box.Text = "Select..." end; rebuild() end))
+    rebuild()
+    return { Get = function() return selected end }
+end
+
 function Ven:KeyPicker(obj, key, mode, callback)
     table.insert(Ven.Keybinds, { Key = key or "RightShift", Mode = mode or "Toggle", Callback = callback, Obj = obj })
 end
@@ -521,9 +559,8 @@ local ok, err = xpcall(function()
     getgenv().VeniceUI = UI
     local Tabs = { Info=UI:Tab("Info"), Combat=UI:Tab("Combat"), Anti=UI:Tab("Anti"), Protect=UI:Tab("Protect"),
         Local=UI:Tab("Local"), Farm=UI:Tab("Farm"), Mastery=UI:Tab("Mastery"), Badges=UI:Tab("Badges"),
-        Gloves=UI:Tab("Gloves"), Misc=UI:Tab("Misc"), Settings=UI:Tab("Settings") }
+        Gloves=UI:Tab("Gloves"), Scripts=UI:Tab("Scripts"), Misc=UI:Tab("Misc"), Settings=UI:Tab("Settings") }
 
-    -- generic anti-loop helper
     local function LoopToggle(sec, name, default, fn, key)
         local tog
         tog = UI:Toggle(sec, name, default, function(v)
@@ -615,7 +652,7 @@ local ok, err = xpcall(function()
         end))
     end
 
-    do -- ANTI (huge protection suite ported from Articles-Hub)
+    do -- ANTI
         local s = UI:Section(Tabs.Anti, "Advanced Guard")
         UI:Label(s, bypassOK and "Bypass: LOADED" or "Bypass: not found")
         UI:Label(s, getgenv().VeniceHook and "Namecall hook: ACTIVE" or "Namecall hook: off")
@@ -635,7 +672,7 @@ local ok, err = xpcall(function()
         UI:Toggle(m, "Anti Nightmare FX", false, function(v) getgenv().AntiNight = v; refreshHook() end)
     end
 
-    do -- PROTECT (the merged protection suite)
+    do -- PROTECT
         local A = Tabs.Protect
         local g1 = UI:Section(A, "Anti Void / Movement")
         UI:Dropdown(g1, "Anti Void Mode", {"Normal","Retro","Water","Psycho","Bob","Fall"}, false, "Normal", function(v) getgenv().AntiVoidChoose = v end)
@@ -854,7 +891,7 @@ local ok, err = xpcall(function()
         end)
     end
 
-    do -- MASTERY (ported engine + toggles)
+    do -- MASTERY
         local function MasteryPlayers(glove, ghost)
             local char = LocalPlayer.Character
             if not char or not char:FindFirstChild("HumanoidRootPart") then return end
@@ -940,7 +977,7 @@ local ok, err = xpcall(function()
             else
                 CreateFreezeBV(); task.wait(0.2)
                 ReplicatedStorage.Duplicate:FireServer(true); task.wait(0.2)
-                LocalPlayer:FindFirstChildOfClass("PlayerGui"); Player.Reset:FireServer()
+                Players.LocalPlayer.Reset:FireServer()
                 repeat task.wait() until LocalPlayer.Character and not LocalPlayer.Character:FindFirstChild("entered"); task.wait(0.5)
             end
         end)
@@ -1041,7 +1078,7 @@ local ok, err = xpcall(function()
 
     do -- GLOVES
         local s = UI:Section(Tabs.Gloves, "Utility")
-        UI:Input(s, "Player", "", function(v) getgenv().PlayerSel = FoundPlr(v, true) end)
+        UI:PlayerDropdown(s, "Player", function(p) getgenv().PlayerSel = p; Notify("Selected: " .. p.Name) end)
         UI:Button(s, "Teleport To Player", function()
             local p = getgenv().PlayerSel
             if p and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character then LocalPlayer.Character.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame end
@@ -1067,6 +1104,34 @@ local ok, err = xpcall(function()
                 until workspace:FindFirstChild("Abyss") == nil
             else Notify("Enter Abyss map first") end
         end)
+    end
+
+    do -- SCRIPTS (external loaders — runs the loadstring, then unloads Venice Hub)
+        local function loadAndExit(sec, label, url)
+            UI:Button(sec, label, function()
+                Notify("Loading " .. label .. "...")
+                local ok, e = pcall(function() loadstring(game:HttpGet(url))() end)
+                if not ok then Notify("Failed: " .. label); warn("[Venice] " .. tostring(e)); return end
+                task.wait(0.2)
+                if getgenv().VeniceUnload then getgenv().VeniceUnload() end
+            end)
+        end
+
+        local util = UI:Section(Tabs.Scripts, "Universal / Utility")
+        loadAndExit(util, "Fling GUI", "https://raw.githubusercontent.com/nvkob1/rbxscripts/refs/heads/main/FlingGUI/FlingGUI.lua")
+        loadAndExit(util, "Cerberus", "http://getcerberus.com/main.lua")
+        loadAndExit(util, "Infinite Yield", "https://raw.githubusercontent.com/EdgeIY/infiniteyield/master/source")
+
+        local sb = UI:Section(Tabs.Scripts, "Slap Battles")
+        loadAndExit(sb, "Slap Battles Official (Zyqril)", "https://raw.githubusercontent.com/kenzyqril-code/Slap-Battles-Script-By-Zyqril-/refs/heads/main/Slap%20Battles%20Official%20Script")
+        loadAndExit(sb, "LoseHubs SB", "https://raw.githubusercontent.com/xxxrrxsds-art/losehubs/refs/heads/main/sbp.lua")
+        loadAndExit(sb, "Articles-Hub Slap Battles", "https://raw.githubusercontent.com/Articles-Hub/ROBLOXScript/refs/heads/main/File-Script/Slap_Battles.lua")
+
+        local hub = UI:Section(Tabs.Scripts, "Other Hubs")
+        loadAndExit(hub, "NovaPlayzTR Hub", "https://rawscripts.net/raw/Universal-Script-Universal-Script-NovaPlayzTR-Hub-122075")
+        loadAndExit(hub, "Zero Universal Op", "https://rawscripts.net/raw/Universal-Script-Zero-Universal-Op-Script-223667")
+
+        UI:Label(hub, "Each button runs the loadstring, then unloads Venice Hub so the two don't overlap.")
     end
 
     do -- MISC
