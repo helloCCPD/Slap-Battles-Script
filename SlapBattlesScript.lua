@@ -332,8 +332,6 @@ function Ven:CreateWindow(opts)
     new("UICorner", { CornerRadius = UDim.new(0,6), Parent = close })
     local min = new("TextButton", { Parent = bar, Size = UDim2.new(0,30,0,30), Position = UDim2.new(1,-74,0,5), BackgroundColor3 = Color3.fromRGB(30,30,40), BorderSizePixel = 0, Text = "×", TextColor3 = Color3.fromRGB(200,200,210), Font = Enum.Font.GothamBold, TextSize = 16 })
     new("UICorner", { CornerRadius = UDim.new(0,6), Parent = min })
-    min.MouseButton1Click:Connect(function() main.Visible = not main.Visible end)
-    close.MouseButton1Click:Connect(function() main.Visible = false end)
     self:MakeDraggable(main, bar)
     local side = new("Frame", { Parent = main, Size = UDim2.new(0,156,1,-52), Position = UDim2.new(0,8,0,44), BackgroundColor3 = Color3.fromRGB(22,22,30), BorderSizePixel = 0 })
     new("UICorner", { CornerRadius = UDim.new(0,10), Parent = side })
@@ -342,6 +340,37 @@ function Ven:CreateWindow(opts)
     local content = new("Frame", { Parent = main, Size = UDim2.new(1,-180,1,-52), Position = UDim2.new(0,172,0,44), BackgroundTransparency = 1 })
     local nh = new("Frame", { Parent = gui, Size = UDim2.new(0,250,1,0), Position = UDim2.new(1,-260,0,20), BackgroundTransparency = 1 })
     new("UIListLayout", { Parent = nh, Padding = UDim.new(0,8), VerticalAlignment = Enum.VerticalAlignment.Top })
+
+    -- "-" : collapse tabs area only, keep titlebar + both buttons
+    local fullSize = main.Size
+    local collapsed = false
+    min.MouseButton1Click:Connect(function()
+        collapsed = not collapsed
+        side.Visible = not collapsed
+        content.Visible = not collapsed
+        nh.Visible = not collapsed
+        if collapsed then
+            tween(main, 0.15, { Size = UDim2.new(fullSize.X.Scale, fullSize.X.Offset, 0, 44) })
+        else
+            tween(main, 0.15, { Size = fullSize })
+        end
+    end)
+
+    -- "x" : close the whole UI, reopen with a keybind
+    local REOPEN_KEY = Enum.KeyCode.RightControl   -- change to any key you want
+    close.MouseButton1Click:Connect(function()
+        if collapsed then
+            collapsed = false
+            side.Visible = true; content.Visible = true; nh.Visible = true
+            main.Size = fullSize
+        end
+        gui.Enabled = false
+    end)
+    UserInputService.InputBegan:Connect(function(i, gp)
+        if gp then return end
+        if i.KeyCode == REOPEN_KEY then gui.Enabled = not gui.Enabled end
+    end)
+
     self.Window = { Gui = gui, Main = main, Sidebar = sideList, Content = content, NotifyHolder = nh }
     self.Tabs = {}
     return self
