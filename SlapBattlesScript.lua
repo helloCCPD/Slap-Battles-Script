@@ -1,4 +1,5 @@
---[[  VENICE HUB  |  Slap Battles  |  Rayfield-style UI + Advanced Anti-Cheat  ]]
+--[[  VENICE HUB v2  |  Slap Battles  |  Rayfield-style UI + Massive Anti-Cheat / Anti / Mastery / Badges  ]]
+--  Merged & upgraded from Venice Hub + Articles-Hub + community protection scripts.
 
 --==================================================================================--
 -- 0. BOOTSTRAP
@@ -19,11 +20,14 @@ local UserInputService  = game:GetService("UserInputService")
 local TweenService      = game:GetService("TweenService")
 local ReplicatedStorage = game:GetService("ReplicatedStorage")
 local TeleportService   = game:GetService("TeleportService")
+local HttpService       = game:GetService("HttpService")
 local VirtualUser       = game:GetService("VirtualUser")
+local Lighting          = game:GetService("Lighting")
 local LocalPlayer       = Players.LocalPlayer
 local Connections       = {}
 local CONFIG = { BlackList = {"stevebody","rock","Counterd","Mirage","Reversed","Digging"}, TimeNotify = 5, Accent = Color3.fromRGB(138,92,246) }
 local function hook(c) table.insert(Connections, c) end
+local function safe(g) return ReplicatedStorage:FindFirstChild(g) end
 
 --==================================================================================--
 -- 1. UTILITY
@@ -40,10 +44,11 @@ local function getAttr(obj, name)
     for k, v in pairs(obj:GetAttributes()) do if k:lower():find(name) then return v end end
 end
 pcall(function()
-    if not fireclickdetector then
+    if not fireclickdetector or not firetouchinterest or not fireproximityprompt then
         local lib = loadstring(game:HttpGet("https://raw.githubusercontent.com/Articles-Hub/ROBLOXScript/refs/heads/main/SCRIPT/Fix.lua"))()
         fireclickdetector = fireclickdetector or lib.fireclickdetector
         fireproximityprompt = fireproximityprompt or lib.fireproximityprompt
+        firetouchinterest = firetouchinterest or lib.firetouchinterest
     end
 end)
 
@@ -59,10 +64,17 @@ function FoundPlr(q, n)
 end
 function CheckGlove() local ls = LocalPlayer:FindFirstChild("leaderstats"); return ls and ls:FindFirstChild("Glove") and ls.Glove.Value end
 function CheckSlap() local ls = LocalPlayer:FindFirstChild("leaderstats"); return ls and ls:FindFirstChild("Slaps") and tonumber(ls.Slaps.Value) or 0 end
+function CheckUnlockGlove(v) return LocalPlayer:FindFirstChild("_unlockedGloves") and LocalPlayer._unlockedGloves:FindFirstChild(v) end
+function CheckBadge(id) local ok, has = pcall(function() return game:GetService("BadgeService"):UserHasBadgeAsync(LocalPlayer.UserId, id) end); return ok and has or false end
 function notSlap(char, list)
     if not char then return false end
     for _, v in ipairs(char:GetChildren()) do local n = v.Name:lower(); for _, b in ipairs(list) do if n:find(b:lower()) then return false end end end
     return true
+end
+function InsideBox(pos, box)
+    local rel = box.CFrame:PointToObjectSpace(pos.Position)
+    local size = box.Size / 2
+    return math.abs(rel.X) <= size.X + 1.2 and math.abs(rel.Y) <= size.Y and math.abs(rel.Z) <= size.Z + 1.2
 end
 function TargetPlayers(skip)
     local t, tr, d = nil, nil, math.huge
@@ -86,15 +98,92 @@ function CreateFreezeBV(o)
     if not e then e = new("BodyVelocity", { Name = name, Parent = hrp, P = 10000, MaxForce = o.MaxForce or Vector3.new(1e9,1e9,1e9), Velocity = o.Velocity or Vector3.zero }) end
     return e
 end
+function VectorTween(T)
+    T = T or {}; T.Speed = T.Speed or 80
+    local char = LocalPlayer.Character or LocalPlayer.CharacterAdded:Wait()
+    local hrp = char:WaitForChild("HumanoidRootPart")
+    local movePart = T.Part or hrp
+    local bv = movePart:FindFirstChild("FreezeBV")
+    if not bv then bv = new("BodyVelocity", { Name = "FreezeBV", P = 10000, MaxForce = Vector3.new(1e9,1e9,1e9), Velocity = Vector3.zero, Parent = movePart }) end
+    repeat task.wait()
+        local dir = T.Place - movePart.Position
+        bv.Velocity = dir.Magnitude > 0 and dir.Unit * T.Speed or Vector3.zero
+    until (movePart.Position - T.Place).Magnitude < 5
+    bv.Velocity = Vector3.zero; bv:Destroy()
+end
+function IsNetworkOwner(part) return part.ReceiveAge == 0 end
+function TimeCountdown(duration, cb)
+    local start = os.time(); local conn
+    conn = RunService.Heartbeat:Connect(function()
+        local rem = math.max(0, duration - (os.time() - start))
+        local h, m, s = math.floor(rem/3600), math.floor((rem%3600)/60), math.floor(rem%60)
+        if cb then cb(string.format("%02d:%02d:%02d", h, m, s), rem) end
+        if rem <= 0 then conn:Disconnect() end
+    end)
+    return conn
+end
 
 --==================================================================================--
--- 2. GLOVE MAPS
+-- 2. SAFE PARTS (Anti-Void / Safespots)
 --==================================================================================--
-local function sr(n) return ReplicatedStorage:FindFirstChild(n) end
-gloveHits = { ["All"] = sr("GeneralHit"), ["Default"] = sr("b"), ["Extended"] = sr("b"), ["Brick"] = sr("BrickHit"),
-    ["Snow"] = sr("SnowHit"), ["Fort"] = sr("Fort"), ["Bomb"] = sr("BombHit"), ["Replica"] = sr("ReplicaHit"),
-    ["Phase"] = sr("PhaseH"), ["Shard"] = sr("ShardHIT"), ["bus"] = sr("hitbus"), ["Null"] = sr("NullHit"),
-    ["Pusher"] = sr("PusherHit"), ["Golden"] = sr("GoldenHit"), ["Killstreak"] = sr("KSHit"), ["Error"] = sr("Errorhit") }
+local function weldChildren(part)
+    for _, v in ipairs(part:GetChildren()) do
+        if v:IsA("BasePart") then
+            new("WeldConstraint", { Part0 = part, Part1 = v, Name = v.Name.." (Weld)", Parent = part })
+            v.Anchored = false
+        end
+    end
+end
+if not workspace:FindFirstChild("SafeBoxSpace") then
+    new("Part", { Name="SafeBoxSpace", Anchored=true, CanCollide=true, Transparency=0.5, Position=Vector3.new(0,15000,0), Size=Vector3.new(150,5,150), Parent=workspace })
+end
+if not workspace:FindFirstChild("SafeBox") then
+    local sb = new("Part", { Name="SafeBox", Anchored=true, CanCollide=true, Transparency=0.5, Position=Vector3.new(-5500,-5000,-5000), Size=Vector3.new(21,5,21), Parent=workspace }, {
+        new("Part", { Name="S1", Anchored=true, Transparency=0.5, Position=Vector3.new(-5499.91,-4991.5,-4989.09), Size=Vector3.new(20,13,2) }),
+        new("Part", { Name="S2", Anchored=true, Transparency=0.5, Size=Vector3.new(21,14,2), CFrame=CFrame.new(-5510.28,-4991.5,-5000.09)*CFrame.Angles(0,math.rad(-90),0) }),
+        new("Part", { Name="S3", Anchored=true, Transparency=0.5, Position=Vector3.new(-5499.3,-4991.5,-5011.12), Size=Vector3.new(21,13,2) }),
+        new("Part", { Name="S4", Anchored=true, Transparency=0.5, Size=Vector3.new(22,13,2), CFrame=CFrame.new(-5489.98,-4991.5,-4999.53)*CFrame.Angles(0,math.rad(-90),0) }),
+        new("Part", { Name="S5", Anchored=true, Transparency=0.5, Position=Vector3.new(-5499.39,-4984,-5000.07), Size=Vector3.new(24,3,24) }),
+    })
+    weldChildren(sb)
+end
+if not workspace:FindFirstChild("Safespot") then
+    local sp = new("Part", { Name="Safespot", Position=Vector3.new(10000,-50,10000), Size=Vector3.new(500,10,500), Anchored=true, CanCollide=true, Transparency=0.5, Parent=workspace }, {
+        new("Part", { Name="DefendPart4", Anchored=true, Transparency=0.5, Position=Vector3.new(10001.1,76,9999.66), Size=Vector3.new(491,10,491) }),
+    })
+    weldChildren(sp)
+end
+if not workspace:FindFirstChild("Bed") then
+    local bed = new("Part", { Name="Bed", Anchored=true, CanCollide=false, Transparency=1, Position=Vector3.new(-100019.5,104,-1500), Size=Vector3.new(0.01,0.01,0.01), Parent=workspace }, {
+        new("Part", { Name="Bed3", Anchored=true, Position=Vector3.new(-100019,104,-1500), Size=Vector3.new(11,1,7), BrickColor=BrickColor.new("Crimson") }),
+    })
+    weldChildren(bed)
+end
+
+--==================================================================================--
+-- 3. GLOVE MAPS (expanded)
+--==================================================================================--
+gloveHits = {
+    ["All"] = safe("GeneralHit"), ["Default"] = safe("b"), ["Extended"] = safe("b"), ["Brick"] = safe("BrickHit"),
+    ["Snow"] = safe("SnowHit"), ["Fort"] = safe("Fort"), ["Bomb"] = safe("BombHit"), ["Replica"] = safe("ReplicaHit"),
+    ["Phase"] = safe("PhaseH"), ["Shard"] = safe("ShardHIT"), ["bus"] = safe("hitbus"), ["Null"] = safe("NullHit"),
+    ["Pusher"] = safe("PusherHit"), ["Golden"] = safe("GoldenHit"), ["Killstreak"] = safe("KSHit"), ["Error"] = safe("Errorhit"),
+    ["Ghost"] = safe("GhostHit"), ["Stun"] = safe("HtStun"), ["Za Hando"] = safe("zhramt"), ["Magnet"] = safe("MagnetHIT"),
+    ["Anchor"] = safe("hitAnchor"), ["Space"] = safe("HtSpace"), ["Boomerang"] = safe("BoomerangH"), ["Mail"] = safe("MailHit"),
+    ["MR"] = safe("MisterHit"), ["Reaper"] = safe("ReaperHit"), ["Defense"] = safe("DefenseHit"), ["Reverse"] = safe("ReverseHit"),
+    ["Shukuchi"] = safe("ShukuchiHit"), ["Duelist"] = safe("DuelistHit"), ["woah"] = safe("woahHit"), ["Ice"] = safe("IceHit"),
+    ["Adios"] = safe("hitAdios"), ["Engineer"] = safe("engiehit"), ["Rocky"] = safe("RockyHit"), ["Conveyor"] = safe("ConvHit"),
+    ["STOP"] = safe("STOP"), ["Phantom"] = safe("PhantomHit"), ["Wormhole"] = safe("WormHit"), ["Acrobat"] = safe("AcHit"),
+    ["Plague"] = safe("PlagueHit"), ["[REDACTED]"] = safe("ReHit"), ["Warp"] = safe("WarpHt"), ["Bubble"] = safe("BubbleHit"),
+    ["Jet"] = safe("JetHit"), ["potato"] = safe("potatohit"), ["bob"] = safe("bobhit"), ["Spy"] = safe("SpyHit"),
+    ["Detonator"] = safe("DetonatorHit"), ["Rage"] = safe("GRRRR"), ["Trap"] = safe("traphi"), ["Orbit"] = safe("Orbihit"),
+    ["Slapple"] = safe("SlappleHit"), ["Disarm"] = safe("DisarmH"), ["Dominance"] = safe("DominanceHit"), ["Link"] = safe("LinkHit"),
+    ["Rojo"] = safe("RojoHit"), ["rob"] = safe("robhit"), ["Rhythm"] = safe("rhythmhit"), ["Nightmare"] = safe("nightmarehit"),
+    ["Hitman"] = safe("HitmanHit"), ["Thor"] = safe("ThorHit"), ["Retro"] = safe("RetroHit"), ["Cloud"] = safe("CloudHit"),
+    ["spin"] = safe("spinhit"), ["Pylon"] = safe("PylonHit"), ["Diamond"] = safe("DiamondHit"), ["Megarock"] = safe("DiamondHit"),
+    ["Moon"] = safe("CelestialHit"), ["Jupiter"] = safe("CelestialHit"), ["Mitten"] = safe("MittenHit"), ["Hallow Jack"] = safe("HallowHIT"),
+    ["OVERKILL"] = safe("Overkillhit"), ["God's Hand"] = safe("Godshand"), ["Kinetic"] = safe("HtStun"),
+}
 local function equipGloveRemote(name)
     local net = ReplicatedStorage:FindFirstChild("BACKEND"); net = net and net:FindFirstChild("Lib") and net.Lib:FindFirstChild("Network")
     local mod = net and require(net); if mod and mod.fireServer then mod.fireServer("SelectGlove", name) end
@@ -109,15 +198,16 @@ function slapglove(obj)
     local cur = CheckGlove(); if not cur then return end
     local hit = gloveHits[cur] or gloveHits["All"]; if not hit then return end
     pcall(function()
-        if cur:lower() == "stalker" then hit:FireServer(obj, false, 45)
-        elseif cur:lower() == "glovel" or cur:lower() == "mutation" then hit:FireServer(obj, true)
-        elseif cur:lower() == "mace" then hit:FireServer(obj, 100)
+        local lc = cur:lower()
+        if lc == "stalker" then hit:FireServer(obj, false, 45)
+        elseif lc == "glovel" or lc == "mutation" then hit:FireServer(obj, true)
+        elseif lc == "mace" then hit:FireServer(obj, 100)
         else hit:FireServer(obj) end
     end)
 end
 
 --==================================================================================--
--- 3. ANTI-CHEAT
+-- 4. ANTI-CHEAT (bypass + namecall hook, expanded)
 --==================================================================================--
 local allowedPlaces = { [6403373529]=true,[136802962479827]=true,[127174121130060]=true,[11520107397]=true,[124596094333302]=true,[2380077519]=true,[9015014224]=true }
 local isSlapBattles = allowedPlaces[game.PlaceId] or getAttr(workspace,"no_one_shot") or getAttr(workspace,"killstreak")
@@ -193,7 +283,7 @@ function setAntiAfk(on)
 end
 
 --==================================================================================--
--- 4. UI LIBRARY  (deterministic layout — no AutomaticSize in content path)
+-- 5. UI LIBRARY
 --==================================================================================--
 local Ven = {}
 Ven.__index = Ven
@@ -234,7 +324,7 @@ function Ven:CreateWindow(opts)
     opts = opts or {}
     local gui = new("ScreenGui", { Name = "VeniceHub", ResetOnSpawn = false, ZIndexBehavior = Enum.ZIndexBehavior.Sibling, DisplayOrder = 999 })
     gui.Parent = getContainer()
-    local main = new("Frame", { Parent = gui, Size = opts.Size or UDim2.new(0,620,0,420), Position = UDim2.new(0.5,-310,0.5,-210), BackgroundColor3 = Color3.fromRGB(18,18,24), BorderSizePixel = 0 })
+    local main = new("Frame", { Parent = gui, Size = opts.Size or UDim2.new(0,660,0,440), Position = UDim2.new(0.5,-330,0.5,-220), BackgroundColor3 = Color3.fromRGB(18,18,24), BorderSizePixel = 0 })
     new("UICorner", { CornerRadius = UDim.new(0,12), Parent = main })
     new("UIStroke", { Color = Color3.fromRGB(45,45,60), Thickness = 1.4, Parent = main })
     local bar = new("Frame", { Parent = main, Size = UDim2.new(1,0,0,40), BackgroundTransparency = 1 })
@@ -259,11 +349,11 @@ function Ven:CreateWindow(opts)
 end
 
 function Ven:Tab(name)
-    local btn = new("TextButton", { Parent = self.Window.Sidebar, Size = UDim2.new(1,0,0,32), BackgroundColor3 = Color3.fromRGB(30,30,40), BackgroundTransparency = 1, BorderSizePixel = 0, Text = "", AutoButtonColor = false })
+    local btn = new("TextButton", { Parent = self.Window.Sidebar, Size = UDim2.new(1,0,0,30), BackgroundColor3 = Color3.fromRGB(30,30,40), BackgroundTransparency = 1, BorderSizePixel = 0, Text = "", AutoButtonColor = false })
     new("UICorner", { CornerRadius = UDim.new(0,7), Parent = btn })
     local ind = new("Frame", { Parent = btn, Size = UDim2.new(0,3,0.6,0), Position = UDim2.new(0,0,0.2,0), BackgroundColor3 = self.Accent, BorderSizePixel = 0 })
     new("UICorner", { CornerRadius = UDim.new(0,3), Parent = ind })
-    new("TextLabel", { Parent = btn, Size = UDim2.new(1,-16,1,0), Position = UDim2.new(0,14,0,0), BackgroundTransparency = 1, Text = name, Font = Enum.Font.GothamMedium, TextSize = 13, TextColor3 = Color3.fromRGB(170,170,185), TextXAlignment = Enum.TextXAlignment.Left })
+    new("TextLabel", { Parent = btn, Size = UDim2.new(1,-16,1,0), Position = UDim2.new(0,14,0,0), BackgroundTransparency = 1, Text = name, Font = Enum.Font.GothamMedium, TextSize = 12, TextColor3 = Color3.fromRGB(170,170,185), TextXAlignment = Enum.TextXAlignment.Left })
     local page = new("ScrollingFrame", { Parent = self.Window.Content, Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, ScrollBarThickness = 3, BorderSizePixel = 0, Visible = false, CanvasSize = UDim2.new(0,0,0,0) })
     local tab = { Button = btn, Page = page, Indicator = ind, Owner = self, Sections = {} }
     function tab:Select()
@@ -280,7 +370,6 @@ function Ven:Tab(name)
     return tab
 end
 
--- Section with manual, deterministic height
 function Ven:Section(tab, title)
     local frame = new("Frame", { Parent = tab.Page, Size = UDim2.new(1,-6,0,32), BackgroundColor3 = Color3.fromRGB(24,24,32), BorderSizePixel = 0 })
     new("UICorner", { CornerRadius = UDim.new(0,9), Parent = frame })
@@ -293,9 +382,7 @@ function Ven:Section(tab, title)
         tab.Page.CanvasSize = UDim2.new(0,0,0,y + 20)
     end
     function sec:Row(inst, h)
-        inst.Size = UDim2.new(1,-20,0,h)
-        inst.Position = UDim2.new(0,10,0,sec.Cursor)
-        inst.Parent = frame
+        inst.Size = UDim2.new(1,-20,0,h); inst.Position = UDim2.new(0,10,0,sec.Cursor); inst.Parent = frame
         sec.Cursor = sec.Cursor + h + 6
         frame.Size = UDim2.new(1,-6,0,sec.Cursor + 6)
         sec:Reflow()
@@ -339,7 +426,7 @@ function Ven:Button(sec, text, callback)
 end
 
 function Ven:Label(sec, text)
-    local l = new("TextLabel", { BackgroundTransparency = 1, Text = text, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = Color3.fromRGB(180,180,195), TextXAlignment = Enum.TextXAlignment.Left })
+    local l = new("TextLabel", { BackgroundTransparency = 1, Text = text, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = Color3.fromRGB(180,180,195), TextXAlignment = Enum.TextXAlignment.Left, TextWrapped = true })
     sec:Row(l, 20)
     return l
 end
@@ -387,11 +474,12 @@ function Ven:Dropdown(sec, text, values, multi, default, callback)
     new("UIStroke", { Color = Color3.fromRGB(45,45,60), Thickness = 1, Parent = box })
     local rowTop = sec.Cursor
     sec:Row(row, 56)
-    local list = new("Frame", { Parent = sec.Frame, Size = UDim2.new(1,-20,0,#values*26+8), Position = UDim2.new(0,10,0,rowTop + 52), BackgroundColor3 = Color3.fromRGB(28,28,38), BorderSizePixel = 0, Visible = false, ZIndex = 50 })
+    local list = new("Frame", { Parent = sec.Frame, Size = UDim2.new(1,-20,0,math.min(#values,8)*26+8), Position = UDim2.new(0,10,0,rowTop + 52), BackgroundColor3 = Color3.fromRGB(28,28,38), BorderSizePixel = 0, Visible = false, ZIndex = 50 })
     new("UICorner", { CornerRadius = UDim.new(0,7), Parent = list })
+    local scroll = new("ScrollingFrame", { Parent = list, Size = UDim2.new(1,0,1,0), BackgroundTransparency = 1, ScrollBarThickness = 3, CanvasSize = UDim2.new(0,0,0,#values*26+8) })
     local ly = 4
     for _, v in ipairs(values) do
-        local opt = new("TextButton", { Parent = list, Size = UDim2.new(1,-8,0,24), Position = UDim2.new(0,4,0,ly), BackgroundColor3 = Color3.fromRGB(34,34,46), BorderSizePixel = 0, Text = "", AutoButtonColor = false, ZIndex = 51 })
+        local opt = new("TextButton", { Parent = scroll, Size = UDim2.new(1,-8,0,24), Position = UDim2.new(0,4,0,ly), BackgroundColor3 = Color3.fromRGB(34,34,46), BorderSizePixel = 0, Text = "", AutoButtonColor = false, ZIndex = 51 })
         new("UICorner", { CornerRadius = UDim.new(0,5), Parent = opt })
         new("TextLabel", { Parent = opt, Size = UDim2.new(1,-8,1,0), Position = UDim2.new(0,8,0,0), BackgroundTransparency = 1, Text = v, Font = Enum.Font.Gotham, TextSize = 12, TextColor3 = Color3.fromRGB(210,210,224), TextXAlignment = Enum.TextXAlignment.Left, ZIndex = 52 })
         opt.MouseButton1Click:Connect(function()
@@ -425,14 +513,25 @@ UserInputService.InputBegan:Connect(function(i, gp)
 end)
 
 --==================================================================================--
--- 5. BUILD + FEATURES
+-- 6. BUILD + FEATURES
 --==================================================================================--
 local UI
 local ok, err = xpcall(function()
-    UI = Ven:CreateWindow({ Title = "Venice Hub  •  Slap Battles", Size = UDim2.new(0,640,0,440) })
+    UI = Ven:CreateWindow({ Title = "Venice Hub v2  •  Slap Battles", Size = UDim2.new(0,680,0,460) })
     getgenv().VeniceUI = UI
-    local Tabs = { Info=UI:Tab("Info"), Combat=UI:Tab("Combat"), Anti=UI:Tab("Anti-Cheat"), Local=UI:Tab("Local"),
-        Farm=UI:Tab("Farm"), Gloves=UI:Tab("Gloves"), Misc=UI:Tab("Misc"), Settings=UI:Tab("Settings") }
+    local Tabs = { Info=UI:Tab("Info"), Combat=UI:Tab("Combat"), Anti=UI:Tab("Anti"), Protect=UI:Tab("Protect"),
+        Local=UI:Tab("Local"), Farm=UI:Tab("Farm"), Mastery=UI:Tab("Mastery"), Badges=UI:Tab("Badges"),
+        Gloves=UI:Tab("Gloves"), Misc=UI:Tab("Misc"), Settings=UI:Tab("Settings") }
+
+    -- generic anti-loop helper
+    local function LoopToggle(sec, name, default, fn, key)
+        local tog
+        tog = UI:Toggle(sec, name, default, function(v)
+            if v then task.spawn(function() while tog:Get() do pcall(fn); task.wait() end end) end
+        end)
+        if key then UI:KeyPicker(tog, key) end
+        return tog
+    end
 
     do -- INFO
         local s = UI:Section(Tabs.Info, "Server / You")
@@ -463,13 +562,39 @@ local ok, err = xpcall(function()
             if v then task.spawn(function() while getgenv().Aura do local t = TargetPlayers(true); if t then slapglove(t:FindFirstChild("HumanoidRootPart")) end; task.wait(getgenv().AuraDelay or 0.35) end end) end
         end)
         UI:KeyPicker(aura, "H")
+
+        local hb = UI:Section(Tabs.Combat, "Hitbox / Extend")
+        UI:Slider(hb, "Hitbox Reach", 4, 30, 10, function(v) getgenv().HitboxReach = v end)
+        LoopToggle(hb, "Hitbox Player", false, function()
+            for _, v in ipairs(Players:GetPlayers()) do
+                if v ~= LocalPlayer and v.Character and v.Character:FindFirstChild("HumanoidRootPart") then
+                    v.Character.HumanoidRootPart.Size = Vector3.new(getgenv().HitboxReach, getgenv().HitboxReach, getgenv().HitboxReach)
+                    v.Character.HumanoidRootPart.Transparency = 0.75
+                end
+            end
+        end, "Z")
+        UI:Slider(hb, "Extend Reach", 2, 20, 5, function(v) getgenv().ExtendReach = v end)
+        UI:Dropdown(hb, "Extend Mode", {"Growth","Meat Stick","Pancake","Wall","Slight"}, false, "Growth", function(v) getgenv().ExtendMode = v end)
+        LoopToggle(hb, "Extend Glove", false, function()
+            local r = getgenv().ExtendReach
+            local mode = getgenv().ExtendMode
+            local target = mode == "Meat Stick" and Vector3.new(0,r,2) or mode == "Pancake" and Vector3.new(0,r,r) or mode == "Wall" and Vector3.new(r,0,r) or mode == "Slight" and Vector3.new(r,r,r+0.7) or Vector3.new(r,r,r)
+            for _, container in ipairs({LocalPlayer.Character, LocalPlayer.Backpack}) do
+                for _, t in ipairs(container:GetChildren()) do
+                    if t:IsA("Tool") and t:FindFirstChild("Glove") then t.Glove.Size = target end
+                end
+            end
+        end)
+
         local ab = UI:Section(Tabs.Combat, "Aimbot")
         UI:Toggle(ab, "Aimbot (camera)", false, function(v) getgenv().Aimbot = v end)
+        UI:Slider(ab, "Prediction", 0, 10, 2, function(v) getgenv().AimbotPred = v end)
         hook(RunService.Heartbeat:Connect(function()
             if not getgenv().Aimbot then return end
             local _, tr = TargetPlayers(true)
-            if tr then workspace.CurrentCamera.CFrame = CFrame.lookAt(workspace.CurrentCamera.CFrame.Position, tr.Position + tr.Velocity * 0.15) end
+            if tr then workspace.CurrentCamera.CFrame = CFrame.lookAt(workspace.CurrentCamera.CFrame.Position, tr.Position + tr.Velocity * (getgenv().AimbotPred or 0)) end
         end))
+
         local pb = UI:Section(Tabs.Combat, "Auto Parry / Counter")
         UI:Slider(pb, "Range", 10, 35, 16, function(v) getgenv().ParryRange = v end)
         UI:Toggle(pb, "Auto Parry", false, function(v) getgenv().AutoParry = v end)
@@ -490,7 +615,7 @@ local ok, err = xpcall(function()
         end))
     end
 
-    do -- ANTI
+    do -- ANTI (huge protection suite ported from Articles-Hub)
         local s = UI:Section(Tabs.Anti, "Advanced Guard")
         UI:Label(s, bypassOK and "Bypass: LOADED" or "Bypass: not found")
         UI:Label(s, getgenv().VeniceHook and "Namecall hook: ACTIVE" or "Namecall hook: off")
@@ -508,25 +633,121 @@ local ok, err = xpcall(function()
         UI:Toggle(m, "Anti Piano", false, function(v) getgenv().AntiPiano = v; refreshHook() end)
         UI:Toggle(m, "Anti Confuse", false, function(v) getgenv().AntiConfuse = v; refreshHook() end)
         UI:Toggle(m, "Anti Nightmare FX", false, function(v) getgenv().AntiNight = v; refreshHook() end)
-        local g = UI:Section(Tabs.Anti, "In-Game Anti")
-        local function loop(name, fn)
-            local tog = UI:Toggle(g, name, false, function(v) if v then task.spawn(function() while tog:Get() do fn(); task.wait() end end) end end)
-        end
-        loop("Anti Void", function()
+    end
+
+    do -- PROTECT (the merged protection suite)
+        local A = Tabs.Protect
+        local g1 = UI:Section(A, "Anti Void / Movement")
+        UI:Dropdown(g1, "Anti Void Mode", {"Normal","Retro","Water","Psycho","Bob","Fall"}, false, "Normal", function(v) getgenv().AntiVoidChoose = v end)
+        LoopToggle(g1, "Anti Void", false, function()
             local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart")
-            if hrp and hrp.Position.Y < -30 then local o = workspace:FindFirstChild("Origo") or workspace:FindFirstChild("SafeBox"); if o then hrp.CFrame = o.CFrame * CFrame.new(0,5,0) end end
+            if hrp and hrp.Position.Y < -30 then
+                if getgenv().AntiVoidChoose == "Fall" then
+                    hrp.CFrame = (workspace:FindFirstChild("Origo") and workspace.Origo.CFrame * CFrame.new(0,-5,0)) or hrp.CFrame
+                else
+                    local sb = workspace:FindFirstChild("SafeBox"); if sb then hrp.CFrame = sb.CFrame * CFrame.new(0,5,0) end
+                end
+            end
+            for _, v in ipairs(workspace:GetChildren()) do
+                if v.Name == "BobWalk1" and v:IsA("BasePart") then v.CanCollide = getgenv().AntiVoidChoose == "Bob" end
+                if v.Name == "Psycho" and v:IsA("BasePart") then v.CanCollide = getgenv().AntiVoidChoose == "Psycho" end
+                if v.Name == "VoidPart" then v.CanCollide = getgenv().AntiVoidChoose == "Normal" end
+            end
         end)
-        loop("Anti Ragdoll", function()
+        LoopToggle(g1, "Anti Ragdoll", false, function()
             local c = LocalPlayer.Character; local r = c and c:FindFirstChild("Ragdolled")
             if r and r.Value then
-                for _, v in ipairs(c:GetDescendants()) do if v:IsA("BallSocketConstraint") or v:IsA("HingeConstraint") then v.Enabled = false elseif v:IsA("Motor6D") then v.Enabled = true end end
+                for _, v in ipairs(c:GetDescendants()) do
+                    if v:IsA("BallSocketConstraint") or v:IsA("HingeConstraint") then v.Enabled = false
+                    elseif v:IsA("Motor6D") then v.Enabled = true end
+                end
                 local h = c:FindFirstChildOfClass("Humanoid"); if h then h:ChangeState(Enum.HumanoidStateType.Running) end
             end
         end)
-        loop("Anti Portal", function() local l = workspace:FindFirstChild("Lobby"); if l then for _, n in ipairs({"Teleport2","Teleport3","Teleport4","Teleport6"}) do local p = l:FindFirstChild(n); if p then p.CanTouch = false end end end end)
-        loop("Anti COD", function() local cod = workspace:FindFirstChild("the cube of death(i heard it kills)", true); if cod then cod.CanTouch = false; local pt = cod:FindFirstChild("Part"); if pt then pt.CanTouch = false end end end)
-        loop("Anti Snowball", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "Snowball" then v:Destroy() end end end)
-        loop("Anti Trap", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "BearTrap" then local h = v:FindFirstChild("HitBox"); if h then h.CanTouch = false end end end end)
+        LoopToggle(g1, "Anti Time Stop", false, function()
+            local c = LocalPlayer.Character; if not c then return end
+            for _, v in ipairs(c:GetChildren()) do if v.ClassName == "Part" then v.Anchored = false end end
+        end)
+        LoopToggle(g1, "Anti Stun", false, function()
+            local c = LocalPlayer.Character
+            if c and c:FindFirstChild("Humanoid") and workspace:FindFirstChild("Shockwave") and c.Ragdolled.Value == false then c.Humanoid.PlatformStand = false end
+        end)
+
+        local g2 = UI:Section(A, "Anti Hazards")
+        LoopToggle(g2, "Anti Portal", function()
+            local l = workspace:FindFirstChild("Lobby"); if l then for _, n in ipairs({"Teleport2","Teleport3","Teleport4","Teleport6"}) do local p = l:FindFirstChild(n); if p then p.CanTouch = false end end end
+        end)
+        LoopToggle(g2, "Anti COD", function()
+            local cod = workspace:FindFirstChild("the cube of death(i heard it kills)", true); if cod then cod.CanTouch = false; local pt = cod:FindFirstChild("Part"); if pt then pt.CanTouch = false end end
+        end)
+        LoopToggle(g2, "Anti Snowball", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "Snowball" then v:Destroy() end end end)
+        LoopToggle(g2, "Anti Trap", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "BearTrap" then local h = v:FindFirstChild("HitBox"); if h then h.CanTouch = false end end end end)
+        LoopToggle(g2, "Anti Lava/Obby", function() for _, v in ipairs(workspace:GetChildren()) do if string.find(v.Name, "Lava") then v.CanTouch = false end end end)
+        LoopToggle(g2, "Anti Megarock", function() for _, v in ipairs(Players:GetPlayers()) do if v.Character and v.Character:FindFirstChild("rock") then v.Character.rock.CanTouch = false; v.Character.rock.CanQuery = false end end end)
+        LoopToggle(g2, "Anti Cherry", function()
+            if workspace:FindFirstChild("cherry_storage") then
+                for _, v in ipairs(workspace.cherry_storage:GetChildren()) do
+                    if not v.Name:match(LocalPlayer.Name) and v:FindFirstChild("clone_remote") and v:FindFirstChild("HumanoidRootPart") then slapglove(v.HumanoidRootPart) end
+                end
+            end
+        end)
+        LoopToggle(g2, "Anti Ball Baller", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "ClonedBall" then v:Destroy() end end end)
+        LoopToggle(g2, "Anti Ice (is_ice)", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "is_ice" then v.CanTouch = false end end end)
+        LoopToggle(g2, "Anti Icecube", function()
+            local c = LocalPlayer.Character; if not c then return end
+            for _, v in ipairs(c:GetChildren()) do
+                if v.Name == "Icecube" then v:Destroy(); if c:FindFirstChild("Humanoid") then c.Humanoid.PlatformStand = false; c.Humanoid.AutoRotate = true end end
+            end
+        end)
+        LoopToggle(g2, "Anti Paint Splash", function() for _, v in ipairs(workspace:GetChildren()) do if string.find(v.Name:lower(), "paint") then v.CanTouch = false; v.CanQuery = false end end end)
+        LoopToggle(g2, "Anti Lure", function()
+            local lure; local c = LocalPlayer.Character; if not c then return end
+            for _, v in ipairs(c:GetChildren()) do if v.Name:lower():find("lure") then lure = v end end
+            for _, v in ipairs(workspace:GetChildren()) do
+                if string.find(v.Name, "_lure") and v:FindFirstChild("Root") and v:FindFirstChild("watercircle") and lure then
+                    local old = c.HumanoidRootPart.CFrame
+                    c.HumanoidRootPart.CFrame = v.Root.CFrame; task.wait(0.3)
+                    c.HumanoidRootPart.CFrame = old
+                end
+            end
+        end)
+        LoopToggle(g2, "Anti Water", function() if workspace:FindFirstChild("puddles") then for _, v in ipairs(workspace.puddles:GetChildren()) do if v.Name == "puddle" then v.CanTouch = false end end end end)
+        LoopToggle(g2, "Anti Jail", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "jail" then for _, h in ipairs(v:GetChildren()) do if h:IsA("BasePart") then h.CanCollide = false end end end end end)
+        LoopToggle(g2, "Anti Pie", function() if LocalPlayer.PlayerGui:FindFirstChild("PieSplash") then LocalPlayer.PlayerGui.PieSplash:Destroy() end end)
+        LoopToggle(g2, "Anti Conveyor", function() local p = LocalPlayer.PlayerScripts:FindFirstChild("LegacyClient"); if p and p:FindFirstChild("ConveyorVictimized") then p.ConveyorVictimized.Disabled = true end end)
+        LoopToggle(g2, "Anti Mitten Blind", function() if LocalPlayer.PlayerGui:FindFirstChild("MittenBlind") then LocalPlayer.PlayerGui.MittenBlind:Destroy() end end)
+        LoopToggle(g2, "Anti Squid Ink", function() if LocalPlayer.PlayerGui:FindFirstChild("SquidInk") then LocalPlayer.PlayerGui.SquidInk.Enabled = false end end)
+        LoopToggle(g2, "Anti Lamp Blind", function()
+            for _, v in ipairs(LocalPlayer.PlayerGui:GetChildren()) do if v.Name:find("whiteframe") then v.Enabled = false end end
+            for _, v in ipairs(Lighting:GetChildren()) do if v.Name:find("lampcc") then v.Enabled = false end end
+        end)
+        LoopToggle(g2, "Anti Boss Guide", function() if workspace:FindFirstChild("BountyHunterRoom") then for _, v in ipairs(workspace.BountyHunterRoom.Build:GetChildren()) do if v.Name == "Model" and v:FindFirstChild("Meshes/boxshadow_Cube.005") and v["Meshes/boxshadow_Cube.005"]:FindFirstChild("Hitbox") then v["Meshes/boxshadow_Cube.005"].Hitbox.CanTouch = false end end end end)
+        LoopToggle(g2, "Anti Death Barrier", function()
+            for _, n in ipairs({"DEATHBARRIER","DEATHBARRIER2","dedBarrier","ArenaBarrier","AntiDefaultArena"}) do
+                local b = workspace:FindFirstChild(n); if b then b.CanTouch = false end
+            end
+        end)
+        LoopToggle(g2, "Anti Mouse Trap", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name:lower() == "mouse trap" and v:FindFirstChild("Hitbox") then v.Hitbox.CanTouch = false end end end)
+        LoopToggle(g2, "Anti Fort Wall", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "Part" and v:FindFirstChild("brownsmoke") and v:FindFirstChild("Sound") then v.CanCollide = false end end end)
+        LoopToggle(g2, "Anti Pusher Wall", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "wall" then v.CanCollide = false end end end)
+        LoopToggle(g2, "Anti Defend Barrier", function() for _, v in ipairs(workspace:GetChildren()) do if string.find(v.Name, "ÅBarrier") then v.CanCollide = false end end end)
+        LoopToggle(g2, "Anti Bubble", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "BubbleObject" and v:FindFirstChildOfClass("Weld") then v:FindFirstChildOfClass("Weld"):Destroy() end end end)
+        LoopToggle(g2, "Anti Pylon", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "Pylon" and v:FindFirstChild("OwningPlayer") and v.OwningPlayer.Value ~= LocalPlayer.Name and v:FindFirstChild("Hitbox") then v.Hitbox:Destroy() end end end)
+        LoopToggle(g2, "Anti Pile", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name:find("Pile") and v.CanTouch then v.CanTouch = false end end end)
+        LoopToggle(g2, "Anti Iceskate", function() if workspace:FindFirstChild("IceBin") then for _, v in ipairs(workspace.IceBin:GetChildren()) do if v:IsA("BasePart") then v:Destroy() end end end end)
+        LoopToggle(g2, "Anti Za Hando", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "Part" and not (v:FindFirstChild("brownsmoke") and v:FindFirstChild("Sound")) then v:Destroy() end end end)
+        LoopToggle(g2, "Anti Brazil", function() local b = workspace.Lobby:FindFirstChild("brazil"); if b then for _, v in ipairs(b:GetChildren()) do if v:IsA("BasePart") then v.CanTouch = false end end end end)
+        LoopToggle(g2, "Anti Booster", function() local c = LocalPlayer.Character; if not c then return end; for _, v in ipairs(c:GetDescendants()) do if v.Name == "BoosterObject" then v:Destroy() end end end)
+        LoopToggle(g2, "Anti Null Imp", function() for _, v in ipairs(workspace:GetChildren()) do if v.Name == "Imp" and v:FindFirstChild("Body") then slapglove(v.Body) end end end)
+        LoopToggle(g2, "Anti Ghost Player", function() for _, v in ipairs(Players:GetChildren()) do if v ~= LocalPlayer and workspace:FindFirstChild(v.Name.."_Body") and workspace[v.Name.."_Body"]:FindFirstChild("Part") then slapglove(workspace[v.Name.."_Body"].Part) end end end)
+
+        local g3 = UI:Section(A, "Safespots")
+        UI:Dropdown(g3, "Teleport Safe", {"SafeBox","Safespot","Bed"}, false, "SafeBox", function(v)
+            local hrp = LocalPlayer.Character and LocalPlayer.Character:FindFirstChild("HumanoidRootPart"); if not hrp then return end
+            if v == "SafeBox" and workspace:FindFirstChild("SafeBox") then hrp.CFrame = workspace.SafeBox.CFrame * CFrame.new(0,5,0)
+            elseif v == "Safespot" and workspace:FindFirstChild("Safespot") then hrp.CFrame = workspace.Safespot.CFrame * CFrame.new(0,10,0)
+            elseif v == "Bed" and workspace:FindFirstChild("Bed") then hrp.CFrame = workspace.Bed.Bed3.CFrame end
+        end)
     end
 
     do -- LOCAL
@@ -599,7 +820,8 @@ local ok, err = xpcall(function()
             end end) end
         end)
         UI:KeyPicker(farm, "F")
-        local m = UI:Section(Tabs.Farm, "Auto Ability")
+
+        local m = UI:Section(Tabs.Farm, "Auto Ability (expanded)")
         UI:Toggle(m, "Spam Ability", false, function(v)
             getgenv().SpamAbility = v
             if v then task.spawn(function() while getgenv().SpamAbility do
@@ -613,10 +835,207 @@ local ok, err = xpcall(function()
                     elseif g == "Bubble" then ReplicatedStorage.BubbleThrow:FireServer()
                     elseif g == "Phase" then ReplicatedStorage.PhaseA:FireServer()
                     elseif g == "Pusher" then ReplicatedStorage.PusherWall:FireServer()
-                    elseif g == "Null" then ReplicatedStorage.NullAbility:FireServer() end
+                    elseif g == "Null" then ReplicatedStorage.NullAbility:FireServer()
+                    elseif g == "rob" then ReplicatedStorage.rob:FireServer()
+                    elseif g == "Brick" then ReplicatedStorage.lbrick:FireServer()
+                    elseif g == "BONK" then ReplicatedStorage.BONK:FireServer()
+                    elseif g == "Tableflip" then ReplicatedStorage.GeneralAbility:FireServer()
+                    elseif g == "Shield" then ReplicatedStorage.GeneralAbility:FireServer()
+                    elseif g == "STOP" then ReplicatedStorage.STOP:FireServer(true)
+                    elseif g == "Mail" then ReplicatedStorage.MailSend:FireServer()
+                    elseif g == "Gravity" then ReplicatedStorage.GeneralAbility:FireServer()
+                    elseif g == "Lamp" then ReplicatedStorage.GeneralAbility:FireServer()
+                    elseif g == "Meteor" then ReplicatedStorage.GeneralAbility:FireServer()
+                    elseif g == "Whirlwind" then ReplicatedStorage.GeneralAbility:FireServer()
+                    elseif g == "Parry" then ReplicatedStorage.GeneralAbility:FireServer() end
                 end)
                 task.wait(0.1)
             end end) end
+        end)
+    end
+
+    do -- MASTERY (ported engine + toggles)
+        local function MasteryPlayers(glove, ghost)
+            local char = LocalPlayer.Character
+            if not char or not char:FindFirstChild("HumanoidRootPart") then return end
+            local function enter(tp)
+                if not char then return end
+                if not char:FindFirstChild("entered") then
+                    local portal = workspace.Lobby[tp].TouchInterest.Parent
+                    repeat task.wait()
+                        if firetouchinterest then firetouchinterest(char.Head, portal, 0); firetouchinterest(char.Head, portal, 1)
+                        else char.HumanoidRootPart.CFrame = portal.CFrame end
+                    until char:FindFirstChild("entered")
+                end
+            end
+            char.HumanoidRootPart.CFrame = workspace["SafeBox"].CFrame * CFrame.new(0,5,0); task.wait(0.4)
+            if ghost and char:FindFirstChild("entered") == nil and CheckSlap() >= 666 then
+                equipglove("Ghost"); repeat task.wait() until CheckGlove():lower() == "ghost"
+                ReplicatedStorage.Ghostinvisibilityactivated:FireServer(); equipglove(glove); task.wait(1)
+                for _, v in ipairs(char:GetChildren()) do if v:IsA("BasePart") and v.Name ~= "HumanoidRootPart" then v.Transparency = 0 end end
+            end
+            enter("Teleport1"); task.wait(0.35)
+            char.HumanoidRootPart.CFrame = workspace["SafeBox"].CFrame * CFrame.new(0,5,0); task.wait(0.3)
+            if char:FindFirstChild("entered") then
+                local pl = {}
+                for _, v in ipairs(Players:GetPlayers()) do
+                    if v ~= LocalPlayer and v.Character and v.Character:FindFirstChild("HumanoidRootPart") and v.Character.HumanoidRootPart.BrickColor ~= BrickColor.new("New Yeller") and v.Character:FindFirstChild("Ragdolled") and not v.Character.HumanoidRootPart:FindFirstChild("BlockedShield") and v.Character.Ragdolled.Value == false and v.Character.isInArena.Value == true and notSlap(v.Character, CONFIG.BlackList) then table.insert(pl, v) end
+                end
+                if #pl ~= 0 then return pl[math.random(#pl)] end
+            end
+        end
+        local function MasteryLoop(gloveName, sec, name, fn)
+            local tog
+            tog = UI:Toggle(sec, name, false, function(v)
+                if CheckGlove() ~= gloveName then Notify("You don't have "..gloveName.." equipped"); if v then task.wait(0.05); tog:Set(false) end; return end
+                if v then task.spawn(function() while tog:Get() do pcall(fn); task.wait() end end) end
+            end)
+            return tog
+        end
+
+        local s = UI:Section(Tabs.Mastery, "Mastery Helpers")
+        UI:Label(s, "Auto-farms mastery challenges for equipped glove.")
+        local common = UI:Section(Tabs.Mastery, "Common Gloves")
+        MasteryLoop("Replica", common, "Auto Replica Mastery", function()
+            local p = MasteryPlayers("Replica", true); if p and p.Character then
+                CreateFreezeBV()
+                p.Character:SetPrimaryPartCFrame(p.Character:FindFirstChild("Head").CFrame * CFrame.new(0,7,0))
+                task.wait(0.3)
+                for _=1,3 do slapglove(p.Character:FindFirstChild("Head")); task.wait(0.2) end
+                LocalPlayer.Character.HumanoidRootPart.CFrame = workspace.SafeBox.CFrame * CFrame.new(0,5,0); task.wait(4)
+            end
+        end)
+        MasteryLoop("Acrobat", common, "Auto Acrobat Mastery", function()
+            local p = MasteryPlayers("Acrobat", true); if p and p.Character then
+                CreateFreezeBV()
+                ReplicatedStorage.Roll:FireServer(); task.wait(0.6)
+                p.Character:SetPrimaryPartCFrame(p.Character:FindFirstChild("Head").CFrame * CFrame.new(0,7,0))
+                task.wait(0.3)
+                for _=1,3 do slapglove(p.Character:FindFirstChild("Head")); task.wait(0.2) end
+                LocalPlayer.Character.HumanoidRootPart.CFrame = workspace.SafeBox.CFrame * CFrame.new(0,5,0); task.wait(4)
+            end
+        end)
+        MasteryLoop("Spring", common, "Auto Spring Mastery", function()
+            local p = MasteryPlayers("Spring", true); if p and p.Character then
+                CreateFreezeBV()
+                ReplicatedStorage.SpringJump:FireServer(); task.wait(1.4)
+                p.Character:SetPrimaryPartCFrame(p.Character:FindFirstChild("Head").CFrame * CFrame.new(0,7,0))
+                task.wait(0.3)
+                for _=1,3 do slapglove(p.Character:FindFirstChild("Head")); task.wait(0.2) end
+                LocalPlayer.Character.HumanoidRootPart.CFrame = workspace.SafeBox.CFrame * CFrame.new(0,5,0); task.wait(4.6)
+            end
+        end)
+        MasteryLoop("Stalker", common, "Auto Stalker Mastery", function()
+            local p = MasteryPlayers("Stalker", true); if p and p.Character then
+                CreateFreezeBV()
+                p.Character:SetPrimaryPartCFrame(p.Character:FindFirstChild("Head").CFrame * CFrame.new(0,7,0))
+                task.wait(0.3)
+                for _=1,3 do slapglove(p.Character:FindFirstChild("Head")); task.wait(0.2) end
+                LocalPlayer.Character.HumanoidRootPart.CFrame = workspace.SafeBox.CFrame * CFrame.new(0,5,0); task.wait(4)
+            end
+        end)
+        MasteryLoop("bob", common, "Auto Bob Farm", function()
+            local char = LocalPlayer.Character; if not char then return end
+            if not char:FindFirstChild("entered") then char.Humanoid:MoveTo(workspace.Lobby.Teleport1.Position)
+            else
+                CreateFreezeBV(); task.wait(0.2)
+                ReplicatedStorage.Duplicate:FireServer(true); task.wait(0.2)
+                LocalPlayer:FindFirstChildOfClass("PlayerGui"); Player.Reset:FireServer()
+                repeat task.wait() until LocalPlayer.Character and not LocalPlayer.Character:FindFirstChild("entered"); task.wait(0.5)
+            end
+        end)
+        MasteryLoop("Killstreak", common, "Auto Killstreak Mastery", function()
+            local p = MasteryPlayers("Killstreak", true); if p and p.Character then
+                CreateFreezeBV()
+                p.Character:SetPrimaryPartCFrame(p.Character:FindFirstChild("Head").CFrame * CFrame.new(0,7,0))
+                task.wait(0.3)
+                for _=1,3 do slapglove(p.Character:FindFirstChild("Head")); task.wait(0.2) end
+                LocalPlayer.Character.HumanoidRootPart.CFrame = workspace.SafeBox.CFrame * CFrame.new(0,5,0); task.wait(4)
+            end
+        end)
+        MasteryLoop("Brick", common, "Auto Big Brick", function()
+            for _, v in ipairs(workspace:GetChildren()) do if v.Name == "Union" then v.Size = Vector3.new(20,1,20) end end
+        end)
+        MasteryLoop("Phase", common, "Auto Phase Mastery", function()
+            local p = MasteryPlayers("Phase", true); if p and p.Character then
+                CreateFreezeBV()
+                p.Character:SetPrimaryPartCFrame(p.Character:FindFirstChild("HumanoidRootPart").CFrame)
+                task.wait(0.3)
+                slapglove(p.Character:FindFirstChild("Head"))
+                ReplicatedStorage.PhaseA:FireServer()
+                LocalPlayer.Character.HumanoidRootPart.CFrame = workspace.SafeBox.CFrame * CFrame.new(0,5,0); task.wait(3)
+            end
+        end)
+        MasteryLoop("Shard", common, "Auto Shard Mastery", function()
+            local p = MasteryPlayers("Shard", true); if p and p.Character then
+                CreateFreezeBV()
+                p.Character:SetPrimaryPartCFrame(p.Character:FindFirstChild("Head").CFrame * CFrame.new(0,7,0))
+                task.wait(0.3)
+                slapglove(p.Character:FindFirstChild("Head"))
+                LocalPlayer.Character.HumanoidRootPart.CFrame = workspace.SafeBox.CFrame * CFrame.new(0,5,0); task.wait(4)
+            end
+        end)
+        MasteryLoop("Null", common, "Auto Null Mastery", function()
+            if workspace:FindFirstChild("Imp") and workspace.Imp:FindFirstChild("Body") then slapglove(workspace.Imp.Body) end
+        end)
+        MasteryLoop("Bomb", common, "Auto Bomb Mastery", function()
+            for _=1,500 do ReplicatedStorage.BombThrow:FireServer("Ebutton") end
+        end)
+        MasteryLoop("Glovel", common, "Auto Glovel Dip", function()
+            LocalPlayer.Character.HumanoidRootPart.CFrame = workspace.SafeBox.CFrame * CFrame.new(0,5,0); task.wait(0.3)
+            for _=1,400 do task.spawn(function() ReplicatedStorage.GlovelFunc:InvokeServer() end); task.wait(0.05) end
+            task.wait(0.4); ReplicatedStorage.GlovelCancel:FireServer(); task.wait(0.8)
+        end)
+        MasteryLoop("Fort", common, "Auto Fort Build", function()
+            if LocalPlayer.Character:FindFirstChild("entered") then ReplicatedStorage.Fortlol:FireServer() end
+            task.wait(3.4)
+        end)
+        MasteryLoop("Rage", common, "Auto Rage Mastery", function()
+            local p = MasteryPlayers("Rage", true); if p and p.Character then
+                CreateFreezeBV()
+                for _=1,20 do slapglove(p.Character:FindFirstChild("HumanoidRootPart")); task.wait() end
+                if (LocalPlayer.Character:GetAttribute("rage_percent") or 0) >= 53 then ReplicatedStorage.GRRRRR:FireServer("frenzy") end
+                task.wait(2)
+            end
+        end)
+        MasteryLoop("Rob", common, "Auto Rob Mastery", function()
+            if LocalPlayer.Character:FindFirstChild("entered") then ReplicatedStorage.rob:FireServer() end
+            task.wait(3)
+        end)
+    end
+
+    do -- BADGES
+        local s = UI:Section(Tabs.Badges, "Quick Badges")
+        UI:Button(s, "Get Duck + Orange + Knife", function() pcall(function()
+            fireclickdetector(workspace.Lobby.Scene.knofe.ClickDetector)
+            fireclickdetector(workspace.Arena.island5.Orange.ClickDetector)
+            fireclickdetector(workspace.Arena["default island"]["Rubber Ducky"].ClickDetector)
+        end) end)
+        UI:Button(s, "Get Free Ice Skate", function() pcall(function() ReplicatedStorage.IceSkate:FireServer("Freeze") end) end)
+        UI:Button(s, "Get Free Lamp (ZZZZZZZ)", function() for _=1,5 do pcall(function() ReplicatedStorage.nightmare:FireServer("LightBroken") end) end end)
+        UI:Button(s, "Get Answer Recall", function()
+            local rm = workspace:FindFirstChild("RepressedMemories"); local npc = rm and rm:FindFirstChild("RepressedMemoriesNPC"); local head = npc and npc:FindFirstChild("Head"); local dialog = head and head:FindFirstChild("Dialog")
+            if dialog then
+                for _, v in ipairs(dialog:GetDescendants()) do
+                    if v:IsA("DialogChoice") then
+                        if v:FindFirstChild("RightChoice") then v.UserDialog = "Uhhh, idk" end
+                        if v:FindFirstChild("FailChoice") then v:Destroy() end
+                    end
+                end
+            else Notify("Enter Limbo first") end
+        end)
+        UI:Button(s, "Get Join Retro", function()
+            if CheckGlove() == "Retro" and workspace.Arena:FindFirstChild("CannonIsland") then
+                for _, v in ipairs(workspace.Arena.CannonIsland:FindFirstChild("Cannon Island [OLD]"):GetChildren()) do
+                    if v.Name == "Model" and v:FindFirstChild("Towers") then
+                        repeat task.wait()
+                            if v.Towers:FindFirstChild("RevealHitbox") then LocalPlayer.Character.HumanoidRootPart.CFrame = v.Towers.RevealHitbox.CFrame * CFrame.new(3,0,0) end
+                            pcall(function() ReplicatedStorage.RetroAbility:FireServer("Ban Hammer") end)
+                        until v.Towers:FindFirstChild("Ring of Fire")
+                        LocalPlayer.Character.HumanoidRootPart.CFrame = v.Towers["Ring of Fire"].CFrame
+                    end
+                end
+            else Notify("Equip Retro") end
         end)
     end
 
@@ -627,22 +1046,34 @@ local ok, err = xpcall(function()
             local p = getgenv().PlayerSel
             if p and p.Character and p.Character:FindFirstChild("HumanoidRootPart") and LocalPlayer.Character then LocalPlayer.Character.HumanoidRootPart.CFrame = p.Character.HumanoidRootPart.CFrame end
         end)
-        UI:Dropdown(s, "Equip Glove", {"Default","Extended","Brick","Snow","Fort","Bomb","Replica","Phase","Shard","Bubble","Pusher","Null","bus"}, false, nil, function(v) equipglove(v) end)
-        local b = UI:Section(Tabs.Gloves, "Badges")
-        UI:Button(b, "Get Duck + Orange + Knife", function() pcall(function()
-            fireclickdetector(workspace.Lobby.Scene.knofe.ClickDetector)
-            fireclickdetector(workspace.Arena.island5.Orange.ClickDetector)
-            fireclickdetector(workspace.Arena["default island"]["Rubber Ducky"].ClickDetector)
-        end) end)
-        UI:Button(b, "Get Free Ice Skate", function() pcall(function() ReplicatedStorage.IceSkate:FireServer("Freeze") end) end)
-        UI:Button(b, "Get Free Lamp (ZZZZZZZ)", function() for _=1,5 do pcall(function() ReplicatedStorage.nightmare:FireServer("LightBroken") end) end end)
+        UI:Dropdown(s, "Equip Glove", {"Default","Extended","Brick","Snow","Fort","Bomb","Replica","Phase","Shard","Bubble","Pusher","Null","bus","Ghost","Stun","Rob","Rage","Killstreak"}, false, nil, function(v) equipglove(v) end)
+
+        local g = UI:Section(Tabs.Gloves, "Instant Glove Actions")
+        UI:Button(g, "Infinite Invisibility", function()
+            if not LocalPlayer.Character:FindFirstChild("entered") and CheckSlap() >= 666 then
+                local og = CheckGlove()
+                fireclickdetector(workspace.Lobby.Ghost.ClickDetector); ReplicatedStorage.Ghostinvisibilityactivated:FireServer()
+                fireclickdetector(workspace.Lobby[og].ClickDetector); task.wait(1)
+                for _, v in ipairs(LocalPlayer.Character:GetChildren()) do if v:IsA("BasePart") and v.Name ~= "HumanoidRootPart" then v.Transparency = 0 end end
+            else Notify("Need lobby + 666 slaps") end
+        end)
+        UI:Button(g, "Auto Win Kraken", function()
+            if workspace:FindFirstChild("Abyss") then
+                repeat task.wait()
+                    if workspace.Abyss:FindFirstChild("Ship") and workspace.Abyss.Ship:FindFirstChild("Ghost_Ship") and workspace.Abyss.Ship.Ghost_Ship:FindFirstChild("Wall") then
+                        LocalPlayer.Character.HumanoidRootPart.CFrame = workspace.Abyss.Ship.Ghost_Ship.Wall.CFrame * CFrame.new(0,10,0)
+                    else break end
+                    for _, v in ipairs(workspace:GetChildren()) do if v.Name == "kraken_hurtbox" then v.CFrame = LocalPlayer.Character.HumanoidRootPart.CFrame end end
+                until workspace:FindFirstChild("Abyss") == nil
+            else Notify("Enter Abyss map first") end
+        end)
     end
 
     do -- MISC
         local s = UI:Section(Tabs.Misc, "Glove Cosmetics")
-        UI:Toggle(s, "Big Glove", false, function(v)
-            getgenv().BigGlove = v
-            if v then task.spawn(function() while getgenv().BigGlove do local c = LocalPlayer.Character; if c then local t = c:FindFirstChildOfClass("Tool"); if t and t:FindFirstChild("Glove") then t.Glove.Size = Vector3.new(8,8,8); t.Glove.Transparency = 0.3 end end; task.wait() end end) end
+        LoopToggle(s, "Big Glove", false, function()
+            local c = LocalPlayer.Character; if not c then return end
+            local t = c:FindFirstChildOfClass("Tool"); if t and t:FindFirstChild("Glove") then t.Glove.Size = Vector3.new(8,8,8); t.Glove.Transparency = 0.3 end
         end)
         local e = UI:Section(Tabs.Misc, "ESP")
         UI:Toggle(e, "Player ESP", false, function(v)
@@ -674,7 +1105,7 @@ end, function(e) return tostring(e) .. "\n" .. debug.traceback() end)
 if not ok then warn("[Venice Hub] BUILD ERROR: " .. tostring(err)) end
 
 --==================================================================================--
--- 6. UNLOAD + PERSIST
+-- 7. UNLOAD + PERSIST
 --==================================================================================--
 getgenv().VeniceUnload = function()
     getgenv().VeniceHubLoaded = false
@@ -689,7 +1120,7 @@ hook(LocalPlayer.OnTeleport:Connect(function()
     local q = queueonteleport or queue_on_teleport
     if q then q([[if not game:IsLoaded() then game.Loaded:Wait() end
 repeat task.wait() until game.Players.LocalPlayer
-loadstring(game:HttpGet("https://raw.githubusercontent.com/Articles-Hub/ROBLOXScript/refs/heads/main/File-Script/Slap_Battles.lua"))()]]) end
+loadstring(game:HttpGet("https://raw.githubusercontent.com/helloCCPD/Slap-Battles-Script/main/SlapBattlesScript.lua"))()]]) end
 end))
-Notify("Venice Hub loaded" .. (bypassOK and " • bypass OK" or ""))
+Notify("Venice Hub v2 loaded" .. (bypassOK and " • bypass OK" or ""))
 print("[Venice Hub] Ready • PlaceId " .. game.PlaceId)
